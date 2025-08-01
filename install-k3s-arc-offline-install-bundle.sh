@@ -378,7 +378,11 @@ validate_bundle_checksum() {
 	
 	verbose_log "Validating bundle checksum..."
 	
-	# First try to get expected checksum from external manifest.md
+	# Calculate actual checksum first
+	local actual_checksum=$(sha256sum "$bundle_file" | cut -d' ' -f1)
+	verbose_log "Calculated bundle checksum: $actual_checksum"
+	
+	# Try to get expected checksum from external manifest.md
 	local expected_checksum=""
 	local manifest_md_file="bundles/manifest.md"
 	
@@ -388,66 +392,74 @@ validate_bundle_checksum() {
 		expected_checksum=$(grep "| $bundle_filename |" "$manifest_md_file" | sed 's/.*| `\([^`]*\)` |.*/\1/' | head -1)
 		if [[ -n "$expected_checksum" ]] && [[ "$expected_checksum" != "$bundle_filename"* ]]; then
 			verbose_log "Found expected checksum in external manifest: $expected_checksum"
-		else
-			expected_checksum=""
-		fi
-	fi
-	
-	# If no external checksum found, try internal manifest.json
-	if [[ -z "$expected_checksum" ]]; then
-		verbose_log "No external checksum found, checking internal manifest..."
-		
-		# Create temporary directory for extraction
-		local temp_extract_dir=$(mktemp -d)
-		
-		# Extract just the manifest to check integrity
-		if tar -xzf "$bundle_file" -C "$temp_extract_dir" --wildcards "*/manifest.json" 2>/dev/null; then
-			# Find manifest file
-			local manifest_file=$(find "$temp_extract_dir" -name "manifest.json" -type f)
-			if [[ -n "$manifest_file" ]]; then
-				# Read expected checksum from internal manifest
-				expected_checksum=$(jq -r '.bundle_checksum' "$manifest_file" 2>/dev/null | sed 's/^sha256://')
-				if [[ -n "$expected_checksum" ]] && [[ "$expected_checksum" != "null" ]]; then
-					verbose_log "Found expected checksum in internal manifest: $expected_checksum"
+			
+			# Compare checksums
+			if [[ "$expected_checksum" != "$actual_checksum" ]]; then
+				verbose_log "Checksum mismatch detected"
+				verbose_log "Expected: $expected_checksum"
+				verbose_log "Actual:   $actual_checksum"
+				
+				# Always prompt user for confirmation unless in quiet mode
+				if [[ "$QUIET" != "true" ]]; then
+					# Clear any pending progress dots first
+					if [[ "$VERBOSE" != "true" ]]; then
+						echo ""
+					fi
+					
+					echo -e "${YELLOW}${WARN} Bundle checksum mismatch detected${NC}"
+					echo -e "   ${BOLD}Expected:${NC} $expected_checksum"
+					echo -e "   ${BOLD}Actual:${NC}   $actual_checksum"
+					echo ""
+					echo -e "This could indicate:"
+					echo -e "   • Bundle was modified after creation"
+					echo -e "   • Bundle was corrupted during transfer"
+					echo -e "   • Bundle integrity compromised"
+					echo ""
+					
+					# Prompt for confirmation
+					while true; do
+						read -p "Continue with installation anyway? [y/N]: " -n 1 -r
+						echo ""
+						case $REPLY in
+							[Yy]* )
+								verbose_log "User chose to proceed despite checksum mismatch"
+								break
+								;;
+							[Nn]* | "" )
+								verbose_log "User chose to abort due to checksum mismatch"
+								return 1
+								;;
+							* )
+								echo "Please answer y (yes) or n (no)."
+								;;
+						esac
+					done
 				else
-					expected_checksum=""
+					# In quiet mode, fail without prompting
+					verbose_log "Checksum mismatch in quiet mode - failing without prompt"
+					return 1
 				fi
+			else
+				verbose_log "Bundle checksum validation passed"
 			fi
+		else
+			verbose_log "Bundle entry not found in manifest"
 		fi
+	else
+		verbose_log "No external manifest found"
 		
-		rm -rf "$temp_extract_dir"
-	fi
-	
-	# If no checksum found anywhere, skip validation
-	if [[ -z "$expected_checksum" ]] || [[ "$expected_checksum" == "null" ]]; then
-		verbose_log "No checksum found in any manifest, skipping validation"
-		return 0
-	fi
-	
-	# Calculate actual checksum
-	local actual_checksum=$(sha256sum "$bundle_file" | cut -d' ' -f1)
-	verbose_log "Calculated bundle checksum: $actual_checksum"
-	
-	if [[ "$expected_checksum" != "$actual_checksum" ]]; then
-		verbose_log "Checksum mismatch detected"
-		verbose_log "Expected: $expected_checksum"
-		verbose_log "Actual:   $actual_checksum"
-		
-		# Always prompt user for confirmation unless in quiet mode
+		# No manifest found - report checksum and ask user to continue
 		if [[ "$QUIET" != "true" ]]; then
 			# Clear any pending progress dots first
 			if [[ "$VERBOSE" != "true" ]]; then
 				echo ""
 			fi
 			
-			echo -e "${YELLOW}${WARN} Bundle checksum mismatch detected${NC}"
-			echo -e "   ${BOLD}Expected:${NC} $expected_checksum"
-			echo -e "   ${BOLD}Actual:${NC}   $actual_checksum"
+			echo -e "${YELLOW}${WARN} No bundle manifest found for checksum validation${NC}"
+			echo -e "   ${BOLD}Calculated checksum:${NC} $actual_checksum"
 			echo ""
-			echo -e "This could indicate:"
-			echo -e "   • Bundle was modified after creation"
-			echo -e "   • Bundle was corrupted during transfer"
-			echo -e "   • Bundle integrity compromised"
+			echo -e "Without a manifest, bundle integrity cannot be verified."
+			echo -e "The bundle may be legitimate but was not created with manifest tracking."
 			echo ""
 			
 			# Prompt for confirmation
@@ -456,11 +468,11 @@ validate_bundle_checksum() {
 				echo ""
 				case $REPLY in
 					[Yy]* )
-						verbose_log "User chose to proceed despite checksum mismatch"
+						verbose_log "User chose to proceed without checksum validation"
 						break
 						;;
 					[Nn]* | "" )
-						verbose_log "User chose to abort due to checksum mismatch"
+						verbose_log "User chose to abort due to missing manifest"
 						return 1
 						;;
 					* )
@@ -469,8 +481,8 @@ validate_bundle_checksum() {
 				esac
 			done
 		else
-			# In quiet mode, fail without prompting
-			verbose_log "Checksum mismatch in quiet mode - failing without prompt"
+			# In quiet mode, fail without prompting when no manifest
+			verbose_log "No manifest found in quiet mode - failing without prompt"
 			return 1
 		fi
 	fi
@@ -761,12 +773,12 @@ if pre_execute_steps "validate_checksum" "Validating bundle integrity"; then
 		validate_bundle_checksum "$BUNDLE_FILE"
 		exit_code=$?
 	else
-		log_file="/tmp/k3s-arc-install-$$.log"
-		validate_bundle_checksum "$BUNDLE_FILE" >"$log_file" 2>&1
+		# Don't redirect user interaction to log file - only technical output
+		validate_bundle_checksum "$BUNDLE_FILE"
 		exit_code=$?
 	fi
 	
-	if ! post_execute_steps "validate_checksum" "$exit_code" "$log_file"; then
+	if ! post_execute_steps "validate_checksum" "$exit_code" ""; then
 		error "Bundle checksum validation failed. Bundle may be corrupted."
 	fi
 fi
