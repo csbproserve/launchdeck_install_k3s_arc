@@ -414,3 +414,49 @@ bundles/
 - ✅ **Security**: Proper credential management and memory cleanup in all components
 - ✅ **Backwards Compatibility**: Zero breaking changes to existing functionality
 - ✅ **Performance**: Lightweight detection and optimized component validation
+
+## Recently Completed Bug Fixes (2025-08-01)
+
+### 14. Offline Bundle Checksum Validation Bug - RESOLVED ✅
+**Problem**: Checksum prompt doesn't appear unless in verbose mode, preventing users from validating bundle integrity
+**Root Causes Identified**:
+1. **Interactive Prompt Redirection Bug**: In non-verbose mode, entire `validate_bundle_checksum()` function output redirected to log file
+2. **Simplified Validation Logic**: Internal `manifest.json` contains `null` checksum (component metadata only), validation should use external `bundles/manifest.md`
+
+**Technical Analysis**:
+- **Install Script Bug** ([`install-k3s-arc-offline-install-bundle.sh:758-772`](install-k3s-arc-offline-install-bundle.sh:758-772)): Output redirection prevents user interaction
+- **Build Script Design**: Internal manifest correctly contains component metadata, external manifest contains bundle checksums
+- **User Impact**: Checksum validation silently skipped, compromising bundle integrity verification
+
+**Solution Implemented**:
+- **Fixed Interactive Prompt Redirection**: Removed log file redirection for `validate_bundle_checksum()` function in non-verbose mode
+- **Simplified Validation Logic**: Uses `bundles/manifest.md` when available, prompts user when manifest missing
+- **Enhanced User Experience**: Clear prompts for both checksum mismatches and missing manifests
+
+**Files Modified**:
+- [`install-k3s-arc-offline-install-bundle.sh`](install-k3s-arc-offline-install-bundle.sh): Lines 758-772 (prompt redirection), Lines 374-480 (validation logic)
+
+**New Validation Flow**:
+1. **Calculate actual checksum** first for consistent behavior
+2. **Use external manifest** (`bundles/manifest.md`) for expected checksum when available
+3. **Checksum mismatch**: Display clear warning with expected vs actual, prompt y|N to continue
+4. **No manifest found**: Display calculated checksum, prompt y|N to continue without validation
+5. **Quiet mode**: Fail without prompting for both scenarios
+
+**Code Quality Maintained**:
+- **Pattern Consistency**: Follows established interactive prompt patterns from project
+- **Error Handling**: Clear user messaging with actionable choices
+- **Security**: Maintains bundle integrity validation when manifests available
+- **User Experience**: Interactive prompts work in both verbose and non-verbose modes
+
+**Testing Status**:
+- ✅ **Bug Analysis**: Confirmed both interactive redirection and validation logic issues
+- ✅ **Fix Implementation**: Interactive prompts now work in all modes
+- ✅ **Validation Logic**: Simplified to use external manifest, graceful fallback when missing
+- 🔄 **Manual Testing**: Ready for user validation with actual bundles
+
+**Integration Quality**:
+- **Backwards Compatible**: No breaking changes to existing bundle validation workflow
+- **User Focused**: Clear messaging for both validation success and failure scenarios
+- **Security Maintained**: Bundle integrity verification preserved when manifests available
+- **Performance**: No impact on existing validation performance
