@@ -1,0 +1,2 @@
+# This file ensures the bundles/ directory is tracked in git
+# The directory will contain offline installation bundles created by build-k3s-arc-offline-install-bundle.sh

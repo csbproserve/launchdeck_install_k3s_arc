@@ -1,0 +1,11 @@
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+
+# IDE files
+.vscode/settings.json
+.idea/
+
+# OS files
+Thumbs.db
