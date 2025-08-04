@@ -47,6 +47,35 @@ This project provides enterprise-ready automation for deploying K3s Kubernetes c
                    --location YOUR_LOCATION
 ```
 
+## Prerequisites
+
+### Git LFS Requirement
+
+This repository uses **Git LFS (Large File Storage)** for offline installation bundles due to their size (~130MB+). You must install Git LFS before cloning or working with this repository.
+
+**Install Git LFS:**
+```bash
+# Rocky Linux/RHEL (dnf/yum)
+sudo dnf install git-lfs
+# or
+sudo yum install git-lfs
+
+# Ubuntu/Debian (apt)
+sudo apt-get install git-lfs
+
+# Initialize Git LFS (after installation)
+git lfs install
+```
+
+**Clone with LFS support:**
+```bash
+git clone <repository-url>
+cd launchdeck_install_k3s_arc
+git lfs pull  # Download actual bundle files
+```
+
+**⚠️ Important**: Without Git LFS, bundle files will appear as small text pointer files, causing checksum validation failures and extraction errors.
+
 ## Offline Installation Guide
 
 ### Why Choose Offline Installation?
@@ -214,6 +243,32 @@ kubectl get pods -n azure-arc
 ## Troubleshooting
 
 ### Common Issues
+
+**Bundle Checksum Validation Failures:**
+```bash
+# Symptom: "Bundle checksum mismatch detected" during installation
+# Cause: Git LFS not installed, bundle file is a text pointer
+
+# Solution: Install Git LFS and pull actual files
+sudo dnf install git-lfs  # or yum/apt-get
+git lfs install
+git lfs pull
+
+# Verify bundle is now correct
+sha256sum bundles/k3s-arc-offline-install-bundle-*.tar.gz
+```
+
+**Bundle Extraction Errors:**
+```bash
+# Symptom: "gzip: stdin: not in gzip format" during extraction
+# Cause: Bundle file is Git LFS pointer, not actual archive
+
+# Check if file is LFS pointer
+file bundles/k3s-arc-offline-install-bundle-*.tar.gz
+# Should show "gzip compressed data", not "ASCII text"
+
+# Fix: Follow Git LFS solution above
+```
 
 **Offline Components Not Detected:**
 ```bash
