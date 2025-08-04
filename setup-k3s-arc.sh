@@ -1917,7 +1917,6 @@ elif pre_execute_steps "azure_cli_installed" "Installing Azure CLI$([ "$OFFLINE_
 			enterprise_error "Azure CLI installation failed" "Check internet connectivity and package repositories"
 		fi
 	fi
-fi
 
 # Install Helm (skip for node joining and offline mode)
 if [[ "${SKIP_AZURE_COMPONENTS}" == "true" ]]; then
