@@ -1234,20 +1234,54 @@ configure_system_access() {
 	# Create sudoers configuration
 	cat > "$temp_sudoers" << EOF
 # K3s management access
-$MGMT_ACCOUNT_NAME ALL=(ALL) NOPASSWD: ALL
+${MGMT_ACCOUNT_NAME} ALL=(ALL) NOPASSWD: ALL
 EOF
 	
 	# Validate and install sudoers file using consistent sudo pattern
 	if ! sudo -n bash -c "
-		visudo -c -f '$temp_sudoers' >/dev/null 2>&1 &&
-		cp '$temp_sudoers' '$sudoers_file' &&
-		chmod 440 '$sudoers_file'
+		visudo -c -f '${temp_sudoers}' >/dev/null 2>&1 &&
+		cp '${temp_sudoers}' '${sudoers_file}' &&
+		chmod 440 '${sudoers_file}'
 	" 2>/dev/null; then
-		rm -f "$temp_sudoers"
+		rm -f "${temp_sudoers}"
 		return 1
 	fi
 	
-	rm -f "$temp_sudoers"
+	rm -f "${temp_sudoers}"
+	return 0
+}
+
+# Configure kubectl access for management user
+configure_mgmt_kubectl_access() {
+	local mgmt_home="/home/${MGMT_ACCOUNT_NAME}"
+	
+	# Ensure management user exists
+	if ! id "${MGMT_ACCOUNT_NAME}" >/dev/null 2>&1; then
+		verbose_log "Management user ${MGMT_ACCOUNT_NAME} does not exist, skipping kubectl configuration"
+		return 0
+	fi
+	
+	# Setup kubectl configuration for management user using consistent sudo pattern
+	if ! sudo -n bash -c "
+		mkdir -p '${mgmt_home}/.kube' &&
+		cp /etc/rancher/k3s/k3s.yaml '${mgmt_home}/.kube/config' &&
+		chown -R '${MGMT_ACCOUNT_NAME}:${MGMT_ACCOUNT_NAME}' '${mgmt_home}/.kube' &&
+		chmod 600 '${mgmt_home}/.kube/config'
+	" 2>/dev/null; then
+		return 1
+	fi
+	
+	# Add KUBECONFIG to management user's shell profile
+	if ! sudo -n bash -c "
+		if ! grep -q 'export KUBECONFIG=\$HOME/.kube/config' '${mgmt_home}/.bashrc' 2>/dev/null; then
+			echo 'export KUBECONFIG=\$HOME/.kube/config' >> '${mgmt_home}/.bashrc' &&
+			chown '${MGMT_ACCOUNT_NAME}:${MGMT_ACCOUNT_NAME}' '${mgmt_home}/.bashrc'
+		fi
+	" 2>/dev/null; then
+		return 1
+	fi
+	
+	verbose_log "kubectl access configured for management user ${MGMT_ACCOUNT_NAME}"
 	return 0
 }
 
@@ -1873,6 +1907,12 @@ if pre_execute_steps "kubectl_configured" "Configuring cluster access"; then
 	
 	if ! post_execute_steps "kubectl_configured" "$exit_code" "$log_file"; then
 		enterprise_error "Cluster access configuration failed" "Check K3s installation and file permissions"
+	fi
+	
+	# Configure kubectl access for management user if remote management is enabled
+	if [[ "${ENABLE_REMOTE_MGMT}" == "true" ]]; then
+		verbose_log "Configuring kubectl access for management user ${MGMT_ACCOUNT_NAME}..."
+		configure_mgmt_kubectl_access
 	fi
 fi
 
@@ -2504,16 +2544,30 @@ else
 	# Show remote management credentials if configured (verbose mode OR print-ssh-key flag)
 	if [[ "$ACCESS_CREDENTIALS_READY" == "true" ]] && [[ -n "$REMOTE_ACCESS_KEY" ]] && ([[ "$VERBOSE" == "true" ]] || [[ "$PRINT_SSH_KEY" == "true" ]]); then
 		echo -e "${BOLD}REMOTE MANAGEMENT ACCESS:${NC}"
-		echo -e "   ${BOLD}Account:${NC} $MGMT_ACCOUNT_NAME"
+		echo -e "   ${BOLD}Account:${NC} ${MGMT_ACCOUNT_NAME}"
 		echo -e "   ${BOLD}SSH Access:${NC} Complete privileges configured"
 		echo -e "   ${BOLD}Private Key (base64):${NC}"
-		echo "   $REMOTE_ACCESS_KEY"
+		echo "   ${REMOTE_ACCESS_KEY}"
 		echo ""
 		echo -e "${BOLD}Connection Command:${NC}"
 		echo "   # Save the key and connect:"
-		echo "   echo '$REMOTE_ACCESS_KEY' | base64 -d > ~/.ssh/${AZURE_CLUSTER_NAME}_k3s_mgmt_key"
+		echo "   echo '${REMOTE_ACCESS_KEY}' | base64 -d > ~/.ssh/${AZURE_CLUSTER_NAME}_k3s_mgmt_key"
 		echo "   chmod 600 ~/.ssh/${AZURE_CLUSTER_NAME}_k3s_mgmt_key"
-		echo "   ssh -i ~/.ssh/${AZURE_CLUSTER_NAME}_k3s_mgmt_key $MGMT_ACCOUNT_NAME@$(hostname -I | awk '{print $1}')"
+		echo "   ssh -i ~/.ssh/${AZURE_CLUSTER_NAME}_k3s_mgmt_key ${MGMT_ACCOUNT_NAME}@$(hostname -I | awk '{print $1}')"
+		echo ""
+		
+		# Show kubeconfig for remote access
+		local server_ip=$(hostname -I | awk '{print $1}')
+		echo -e "${BOLD}KUBERNETES REMOTE ACCESS:${NC}"
+		echo "   # Add this context to your local kubeconfig:"
+		echo "   kubectl config set-cluster ${AZURE_CLUSTER_NAME} --server=https://${server_ip}:6443 --insecure-skip-tls-verify=true"
+		echo "   kubectl config set-credentials ${MGMT_ACCOUNT_NAME}@${AZURE_CLUSTER_NAME} --exec-command=ssh --exec-arg=-i --exec-arg=~/.ssh/${AZURE_CLUSTER_NAME}_k3s_mgmt_key --exec-arg=${MGMT_ACCOUNT_NAME}@${server_ip} --exec-arg=kubectl --exec-arg=config --exec-arg=view --exec-arg=--raw"
+		echo "   kubectl config set-context ${AZURE_CLUSTER_NAME} --cluster=${AZURE_CLUSTER_NAME} --user=${MGMT_ACCOUNT_NAME}@${AZURE_CLUSTER_NAME}"
+		echo "   kubectl config use-context ${AZURE_CLUSTER_NAME}"
+		echo ""
+		echo "   # Or copy the kubeconfig directly via SSH:"
+		echo "   scp -i ~/.ssh/${AZURE_CLUSTER_NAME}_k3s_mgmt_key ${MGMT_ACCOUNT_NAME}@${server_ip}:~/.kube/config ~/.kube/${AZURE_CLUSTER_NAME}-config"
+		echo "   export KUBECONFIG=~/.kube/${AZURE_CLUSTER_NAME}-config"
 		echo ""
 	fi
 
