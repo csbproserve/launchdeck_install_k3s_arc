@@ -164,7 +164,7 @@ cleanup_on_exit() {
 	unset AZURE_CLIENT_SECRET JOIN_TOKEN SERVER_IP NODE_ROLE SKIP_AZURE_COMPONENTS
 	unset AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_RESOURCE_GROUP
 	unset AZURE_CLUSTER_NAME AZURE_LOCATION SYSTEM_ARCH HELM_ARCH KUBECTL_ARCH AZ_COMPATIBLE
-	unset TEMP_DIR CURRENT_STEP TOTAL_STEPS STATE_FILE
+	unset TEMP_DIR CURRENT_STEP TOTAL_STEPS STATE_FILE SERVER_IP_LOCAL
 	unset ENABLE_REMOTE_MGMT MGMT_ACCOUNT_NAME ACCESS_CREDENTIALS_READY SHOW_REMOTE_MGMT_STATUS
 	
 	verbose_log "Cleared sensitive variables from memory"
@@ -2557,16 +2557,17 @@ else
 		echo ""
 		
 		# Show kubeconfig for remote access
-		local server_ip=$(hostname -I | awk '{print $1}')
+		SERVER_IP_LOCAL=$(hostname -I | awk '{print $1}')
 		echo -e "${BOLD}KUBERNETES REMOTE ACCESS:${NC}"
 		echo "   # Add this context to your local kubeconfig:"
-		echo "   kubectl config set-cluster ${AZURE_CLUSTER_NAME} --server=https://${server_ip}:6443 --insecure-skip-tls-verify=true"
-		echo "   kubectl config set-credentials ${MGMT_ACCOUNT_NAME}@${AZURE_CLUSTER_NAME} --exec-command=ssh --exec-arg=-i --exec-arg=~/.ssh/${AZURE_CLUSTER_NAME}_k3s_mgmt_key --exec-arg=${MGMT_ACCOUNT_NAME}@${server_ip} --exec-arg=kubectl --exec-arg=config --exec-arg=view --exec-arg=--raw"
+		echo "   kubectl config set-cluster ${AZURE_CLUSTER_NAME} --server=https://${SERVER_IP_LOCAL}:6443 --insecure-skip-tls-verify=true"
+		echo "   kubectl config set-credentials ${MGMT_ACCOUNT_NAME}@${AZURE_CLUSTER_NAME} --exec-command=ssh --exec-arg=-i --exec-arg=~/.ssh/${AZURE_CLUSTER_NAME}_k3s_mgmt_key --exec-arg=${MGMT_ACCOUNT_NAME}@${SERVER_IP_LOCAL} --exec-arg=kubectl --exec-arg=config --exec-arg=view --exec-arg=--raw"
 		echo "   kubectl config set-context ${AZURE_CLUSTER_NAME} --cluster=${AZURE_CLUSTER_NAME} --user=${MGMT_ACCOUNT_NAME}@${AZURE_CLUSTER_NAME}"
 		echo "   kubectl config use-context ${AZURE_CLUSTER_NAME}"
 		echo ""
 		echo "   # Or copy the kubeconfig directly via SSH:"
-		echo "   scp -i ~/.ssh/${AZURE_CLUSTER_NAME}_k3s_mgmt_key ${MGMT_ACCOUNT_NAME}@${server_ip}:~/.kube/config ~/.kube/${AZURE_CLUSTER_NAME}-config"
+		echo "   scp -i ~/.ssh/${AZURE_CLUSTER_NAME}_k3s_mgmt_key ${MGMT_ACCOUNT_NAME}@${SERVER_IP_LOCAL}:~/.kube/config ~/.kube/${AZURE_CLUSTER_NAME}-config"
+		echo "   sed -i 's/127.0.0.1/${SERVER_IP_LOCAL}/g' ~/.kube/${AZURE_CLUSTER_NAME}-config"
 		echo "   export KUBECONFIG=~/.kube/${AZURE_CLUSTER_NAME}-config"
 		echo ""
 	fi
