@@ -194,6 +194,26 @@ The offline installation handles **complete system preparation**:
 ./build-k3s-arc-offline-install-bundle.sh --remove-bundle BUNDLE_FILE
 ```
 
+### Utility Scripts
+
+**Fix File Descriptor Limits:**
+```bash
+# Fixes "Too many open files" errors after disk space issues
+sudo ./k3s-ulimit-fix.sh
+```
+
+**Clean Up Network Policies:**
+```bash
+# Remove problematic network policies
+./k3s-netpol-cleanup.sh
+```
+
+**Fix Firewall Rules:**
+```bash
+# Resolve firewall conflicts with k3s
+sudo ./k3s-firewalld-fix.sh
+```
+
 ## Verification and Status
 
 ### Check Installation Status
@@ -295,6 +315,23 @@ kubectl get nodes
 # Check Arc agents
 kubectl get pods -n azure-arc
 kubectl logs -n azure-arc -l app.kubernetes.io/component=connect-agent
+```
+
+**File Descriptor Limit Issues:**
+```bash
+# Symptoms: "Too many open files" errors, fluent-bit CrashLoopBackOff
+# Common after disk space exhaustion or in high-load environments
+
+# Check current limits
+ulimit -n
+cat /proc/sys/fs/file-max
+
+# Apply fix (increases limits and restarts k3s)
+sudo ./k3s-ulimit-fix.sh
+
+# Verify pods recover
+kubectl get pods -n azure-arc
+kubectl logs <pod-name> -n azure-arc --all-containers=true
 ```
 
 ### Getting Help
