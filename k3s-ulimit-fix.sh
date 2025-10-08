@@ -2,18 +2,21 @@
 #
 # k3s-ulimit-fix.sh
 #
-# Fixes file descriptor (ulimit) issues for k3s clusters that commonly occur
-# after disk space exhaustion events or in high-load environments.
+# Fixes file descriptor (ulimit) and inotify issues for k3s clusters that
+# commonly occur after disk space exhaustion events or in high-load environments.
 #
 # This script:
 # 1. Increases system-wide file descriptor limits
-# 2. Configures systemd service limits for k3s
-# 3. Restarts k3s to apply changes
+# 2. Increases inotify limits (critical for fluent-bit and log tailers)
+# 3. Configures systemd service limits for k3s
+# 4. Restarts k3s to apply changes
 #
 # Symptoms this fixes:
 # - "Too many open files" errors in container logs (especially fluent-bit)
+# - "failed to allocate directory watch" errors
 # - CrashLoopBackOff for Azure Arc agents (extension-manager, resource-sync-agent)
 # - errno=24 errors in fluent-bit or other logging containers
+# - inotify initialization failures
 #
 # Usage:
 #   sudo ./k3s-ulimit-fix.sh
@@ -50,14 +53,17 @@ echo -e "${GREEN}✓${NC} Backup created: $BACKUP_FILE"
 echo
 
 # Check current limits
-echo -e "${YELLOW}[2/5]${NC} Current system limits:"
-echo "  System max: $(cat /proc/sys/fs/file-max)"
+echo -e "${YELLOW}[2/6]${NC} Current system limits:"
+echo "  File descriptor max: $(cat /proc/sys/fs/file-max)"
 echo "  Current user soft limit: $(su - ${SUDO_USER:-$(logname)} -c 'ulimit -Sn' 2>/dev/null || echo 'N/A')"
 echo "  Current user hard limit: $(su - ${SUDO_USER:-$(logname)} -c 'ulimit -Hn' 2>/dev/null || echo 'N/A')"
+echo "  Inotify max instances: $(cat /proc/sys/fs/inotify/max_user_instances)"
+echo "  Inotify max watches: $(cat /proc/sys/fs/inotify/max_user_watches)"
+echo "  Inotify instances in use: $(find /proc/*/fd -lname 'anon_inode:inotify' 2>/dev/null | wc -l)"
 echo
 
 # Set system-wide limits
-echo -e "${YELLOW}[3/5]${NC} Configuring system-wide file descriptor limits..."
+echo -e "${YELLOW}[3/6]${NC} Configuring system-wide file descriptor limits..."
 
 # Remove any existing nofile entries to avoid conflicts
 sed -i '/nofile/d' "$LIMITS_CONF"
@@ -76,8 +82,26 @@ EOF
 echo -e "${GREEN}✓${NC} System-wide limits configured"
 echo
 
+# Configure inotify limits for fluent-bit and other log tailers
+echo -e "${YELLOW}[4/6]${NC} Configuring inotify limits..."
+
+SYSCTL_CONF="/etc/sysctl.d/99-k3s-inotify.conf"
+cat > "$SYSCTL_CONF" << 'EOF'
+# LaunchDeck k3s inotify limits
+# Added by k3s-ulimit-fix.sh
+# These are needed for fluent-bit and other log tailing containers
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches = 524288
+EOF
+
+# Apply sysctl changes immediately
+sysctl -p "$SYSCTL_CONF" > /dev/null 2>&1
+
+echo -e "${GREEN}✓${NC} inotify limits configured"
+echo
+
 # Configure k3s service limits
-echo -e "${YELLOW}[4/5]${NC} Configuring k3s service limits..."
+echo -e "${YELLOW}[5/6]${NC} Configuring k3s service limits..."
 
 K3S_SERVICE_DIR="/etc/systemd/system/k3s.service.d"
 mkdir -p "$K3S_SERVICE_DIR"
@@ -97,7 +121,7 @@ echo -e "${GREEN}✓${NC} k3s service limits configured"
 echo
 
 # Restart k3s
-echo -e "${YELLOW}[5/5]${NC} Restarting k3s service..."
+echo -e "${YELLOW}[6/6]${NC} Restarting k3s service..."
 echo -e "${YELLOW}Warning:${NC} This will briefly interrupt cluster operations"
 read -p "Press Enter to continue or Ctrl+C to abort..."
 
@@ -133,7 +157,9 @@ if systemctl is-active --quiet k3s; then
 
     echo
     echo -e "${GREEN}New system limits:${NC}"
-    echo "  System max: $(cat /proc/sys/fs/file-max)"
+    echo "  File descriptor max: $(cat /proc/sys/fs/file-max)"
+    echo "  Inotify max instances: $(cat /proc/sys/fs/inotify/max_user_instances)"
+    echo "  Inotify max watches: $(cat /proc/sys/fs/inotify/max_user_watches)"
 
     echo
     echo -e "${GREEN}Fix applied successfully!${NC}"
