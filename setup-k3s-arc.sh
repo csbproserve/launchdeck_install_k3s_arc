@@ -1683,10 +1683,10 @@ if [[ "${NODE_ROLE}" == "agent" ]] || [[ "${NODE_ROLE}" == "server" && -n "${JOI
 	fi
 else
 	if [[ "$OFFLINE" == "true" ]]; then
-		TOTAL_STEPS=9  # time_sync_configured, firewall_configured, k3s_path_fixed, kubectl_configured, azure_cli_configured, azure_authenticated, resource_group_created, arc_connected, oidc_configured, flux_installed (skip system_update, packages_installed, k3s_installed, azure_cli_installed, helm_installed)
+		TOTAL_STEPS=10  # time_sync_configured, firewall_configured, k3s_path_fixed, kubectl_configured, azure_cli_configured, azure_authenticated, resource_group_created, arc_connected, oidc_configured, flux_installed (skip system_update, packages_installed, k3s_installed, azure_cli_installed, helm_installed)
 		# Add remote management step if enabled
 		if [[ "$ENABLE_REMOTE_MGMT" == "true" ]]; then
-			TOTAL_STEPS=10
+			TOTAL_STEPS=11
 		fi
 		if [[ "$VERBOSE" != "true" ]] && [[ "$QUIET" != "true" ]]; then
 			log "Using offline components (skipping system updates, packages, K3s installation, Azure CLI installation, and Helm installation)"
@@ -1829,11 +1829,11 @@ elif [[ "${NODE_ROLE}" == "server" && -n "${JOIN_TOKEN}" ]]; then
 	# Additional server joining cluster
 	if pre_execute_steps "k3s_installed" "Installing Kubernetes (K3s) - Additional Server" "true"; then
 		if [[ "$VERBOSE" == "true" ]]; then
-			K3S_URL=https://${SERVER_IP}:6443 K3S_TOKEN=${JOIN_TOKEN} curl -sfL https://get.k3s.io | sh -s - server ${K3S_COMMON_SERVER_FLAGS} && sleep 30
+			curl -sfL https://get.k3s.io | K3S_URL="https://${SERVER_IP}:6443" K3S_TOKEN="${JOIN_TOKEN}" sh -s - server ${K3S_COMMON_SERVER_FLAGS} && sleep 30
 			exit_code=$?
 		else
 			log_file="/tmp/k3s-arc-setup-$$.log"
-			K3S_URL=https://${SERVER_IP}:6443 K3S_TOKEN=${JOIN_TOKEN} curl -sfL https://get.k3s.io | sh -s - server ${K3S_COMMON_SERVER_FLAGS} >"$log_file" 2>&1 && sleep 30
+			curl -sfL https://get.k3s.io | K3S_URL="https://${SERVER_IP}:6443" K3S_TOKEN="${JOIN_TOKEN}" sh -s - server ${K3S_COMMON_SERVER_FLAGS} >"$log_file" 2>&1 && sleep 30
 			exit_code=$?
 		fi
 
@@ -1845,11 +1845,11 @@ elif [[ "${NODE_ROLE}" == "agent" ]]; then
 	# Agent node joining cluster
 	if pre_execute_steps "k3s_installed" "Installing Kubernetes (K3s) - Agent Node" "true"; then
 		if [[ "$VERBOSE" == "true" ]]; then
-			K3S_URL=https://${SERVER_IP}:6443 K3S_TOKEN=${JOIN_TOKEN} curl -sfL https://get.k3s.io | sh - && sleep 30
+			curl -sfL https://get.k3s.io | K3S_URL="https://${SERVER_IP}:6443" K3S_TOKEN="${JOIN_TOKEN}" sh - && sleep 30
 			exit_code=$?
 		else
 			log_file="/tmp/k3s-arc-setup-$$.log"
-			K3S_URL=https://${SERVER_IP}:6443 K3S_TOKEN=${JOIN_TOKEN} curl -sfL https://get.k3s.io | sh - >"$log_file" 2>&1 && sleep 30
+			curl -sfL https://get.k3s.io | K3S_URL="https://${SERVER_IP}:6443" K3S_TOKEN="${JOIN_TOKEN}" sh - >"$log_file" 2>&1 && sleep 30
 			exit_code=$?
 		fi
 		
@@ -2274,10 +2274,17 @@ else
 
 				# Configure k3s API server with the OIDC issuer
 				verbose_log "Configuring k3s service-account-issuer..."
-				sudo tee /etc/rancher/k3s/config.yaml > /dev/null <<-OIDC_EOF
-				kube-apiserver-arg:
-				  - "service-account-issuer=${OIDC_ISSUER_URL}"
-OIDC_EOF
+				sudo mkdir -p /etc/rancher/k3s
+				if [[ -f /etc/rancher/k3s/config.yaml ]] && sudo grep -q "service-account-issuer" /etc/rancher/k3s/config.yaml 2>/dev/null; then
+					# Update existing service-account-issuer in place
+					sudo sed -i "s|service-account-issuer=.*|service-account-issuer=${OIDC_ISSUER_URL}\"|" /etc/rancher/k3s/config.yaml
+				elif [[ -f /etc/rancher/k3s/config.yaml ]] && sudo grep -q "kube-apiserver-arg" /etc/rancher/k3s/config.yaml 2>/dev/null; then
+					# Append issuer to existing kube-apiserver-arg list
+					sudo sed -i "/kube-apiserver-arg:/a\\  - \"service-account-issuer=${OIDC_ISSUER_URL}\"" /etc/rancher/k3s/config.yaml
+				else
+					# Create or append new section
+					printf '\nkube-apiserver-arg:\n  - "service-account-issuer=%s"\n' "${OIDC_ISSUER_URL}" | sudo tee -a /etc/rancher/k3s/config.yaml > /dev/null
+				fi
 
 				# Restart k3s to apply the new issuer
 				verbose_log "Restarting k3s to apply OIDC configuration..."
