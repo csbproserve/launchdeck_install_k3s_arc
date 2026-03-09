@@ -1790,18 +1790,26 @@ if pre_execute_steps "firewall_configured" "Configuring firewall"; then
 fi
 
 # Install K3s based on node role
+# Build common server flags — includes OIDC issuer for Azure workload identity
+K3S_COMMON_SERVER_FLAGS="--write-kubeconfig-mode 644 --disable traefik --disable servicelb"
+if [[ -n "${AZURE_CLUSTER_NAME}" ]]; then
+	K3S_OIDC_ISSUER="https://oidc.prod-aks.azure.com/${AZURE_CLUSTER_NAME}/"
+	K3S_COMMON_SERVER_FLAGS="${K3S_COMMON_SERVER_FLAGS} --kube-apiserver-arg service-account-issuer=${K3S_OIDC_ISSUER}"
+	log "${INFO} Configuring OIDC issuer: ${K3S_OIDC_ISSUER}"
+fi
+
 if [[ -z "${NODE_ROLE}" ]]; then
 	# Single node mode
 	if pre_execute_steps "k3s_installed" "Installing Kubernetes (K3s)" "true"; then
 		if [[ "$VERBOSE" == "true" ]]; then
-			curl -sfL https://get.k3s.io | sh -s - --write-kubeconfig-mode 644 --disable traefik --disable servicelb && sleep 30
+			curl -sfL https://get.k3s.io | sh -s - ${K3S_COMMON_SERVER_FLAGS} && sleep 30
 			exit_code=$?
 		else
 			log_file="/tmp/k3s-arc-setup-$$.log"
-			curl -sfL https://get.k3s.io | sh -s - --write-kubeconfig-mode 644 --disable traefik --disable servicelb >"$log_file" 2>&1 && sleep 30
+			curl -sfL https://get.k3s.io | sh -s - ${K3S_COMMON_SERVER_FLAGS} >"$log_file" 2>&1 && sleep 30
 			exit_code=$?
 		fi
-		
+
 		if ! post_execute_steps "k3s_installed" "$exit_code" "$log_file"; then
 			enterprise_error "K3s installation failed" "Check internet connectivity and system requirements"
 		fi
@@ -1810,14 +1818,14 @@ elif [[ "${NODE_ROLE}" == "server" && -z "${JOIN_TOKEN}" ]]; then
 	# First server in cluster
 	if pre_execute_steps "k3s_installed" "Installing Kubernetes (K3s) - First Server" "true"; then
 		if [[ "$VERBOSE" == "true" ]]; then
-			curl -sfL https://get.k3s.io | sh -s - server --write-kubeconfig-mode 644 --disable traefik --disable servicelb --cluster-init && sleep 30
+			curl -sfL https://get.k3s.io | sh -s - server ${K3S_COMMON_SERVER_FLAGS} --cluster-init && sleep 30
 			exit_code=$?
 		else
 			log_file="/tmp/k3s-arc-setup-$$.log"
-			curl -sfL https://get.k3s.io | sh -s - server --write-kubeconfig-mode 644 --disable traefik --disable servicelb --cluster-init >"$log_file" 2>&1 && sleep 30
+			curl -sfL https://get.k3s.io | sh -s - server ${K3S_COMMON_SERVER_FLAGS} --cluster-init >"$log_file" 2>&1 && sleep 30
 			exit_code=$?
 		fi
-		
+
 		if ! post_execute_steps "k3s_installed" "$exit_code" "$log_file"; then
 			enterprise_error "K3s server installation failed" "Check internet connectivity and system requirements"
 		fi
@@ -1826,14 +1834,14 @@ elif [[ "${NODE_ROLE}" == "server" && -n "${JOIN_TOKEN}" ]]; then
 	# Additional server joining cluster
 	if pre_execute_steps "k3s_installed" "Installing Kubernetes (K3s) - Additional Server" "true"; then
 		if [[ "$VERBOSE" == "true" ]]; then
-			K3S_URL=https://${SERVER_IP}:6443 K3S_TOKEN=${JOIN_TOKEN} curl -sfL https://get.k3s.io | sh -s - server --write-kubeconfig-mode 644 --disable traefik --disable servicelb && sleep 30
+			K3S_URL=https://${SERVER_IP}:6443 K3S_TOKEN=${JOIN_TOKEN} curl -sfL https://get.k3s.io | sh -s - server ${K3S_COMMON_SERVER_FLAGS} && sleep 30
 			exit_code=$?
 		else
 			log_file="/tmp/k3s-arc-setup-$$.log"
-			K3S_URL=https://${SERVER_IP}:6443 K3S_TOKEN=${JOIN_TOKEN} curl -sfL https://get.k3s.io | sh -s - server --write-kubeconfig-mode 644 --disable traefik --disable servicelb >"$log_file" 2>&1 && sleep 30
+			K3S_URL=https://${SERVER_IP}:6443 K3S_TOKEN=${JOIN_TOKEN} curl -sfL https://get.k3s.io | sh -s - server ${K3S_COMMON_SERVER_FLAGS} >"$log_file" 2>&1 && sleep 30
 			exit_code=$?
 		fi
-		
+
 		if ! post_execute_steps "k3s_installed" "$exit_code" "$log_file"; then
 			enterprise_error "K3s server join failed" "Check server IP, join token, and network connectivity"
 		fi
