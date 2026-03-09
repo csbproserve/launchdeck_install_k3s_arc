@@ -1487,10 +1487,10 @@ show_status() {
 	echo ""
 
 	# Overall status calculation
-	TOTAL_STEPS=11
+	TOTAL_STEPS=12
 	COMPLETED_STEPS=0
 
-	for step in "time_sync_configured" "system_update" "packages_installed" "firewall_configured" "k3s_installed" "k3s_path_fixed" "kubectl_configured" "azure_cli_configured" "helm_installed" "arc_connected" "flux_installed"; do
+	for step in "time_sync_configured" "system_update" "packages_installed" "firewall_configured" "k3s_installed" "k3s_path_fixed" "kubectl_configured" "azure_cli_configured" "helm_installed" "arc_connected" "oidc_configured" "flux_installed"; do
 		if check_completed "$step"; then
 			((COMPLETED_STEPS++))
 		fi
@@ -1683,19 +1683,19 @@ if [[ "${NODE_ROLE}" == "agent" ]] || [[ "${NODE_ROLE}" == "server" && -n "${JOI
 	fi
 else
 	if [[ "$OFFLINE" == "true" ]]; then
-		TOTAL_STEPS=8  # time_sync_configured, firewall_configured, k3s_path_fixed, kubectl_configured, azure_cli_configured, azure_authenticated, resource_group_created, arc_connected, flux_installed (skip system_update, packages_installed, k3s_installed, azure_cli_installed, helm_installed)
+		TOTAL_STEPS=9  # time_sync_configured, firewall_configured, k3s_path_fixed, kubectl_configured, azure_cli_configured, azure_authenticated, resource_group_created, arc_connected, oidc_configured, flux_installed (skip system_update, packages_installed, k3s_installed, azure_cli_installed, helm_installed)
 		# Add remote management step if enabled
 		if [[ "$ENABLE_REMOTE_MGMT" == "true" ]]; then
-			TOTAL_STEPS=9
+			TOTAL_STEPS=10
 		fi
 		if [[ "$VERBOSE" != "true" ]] && [[ "$QUIET" != "true" ]]; then
 			log "Using offline components (skipping system updates, packages, K3s installation, Azure CLI installation, and Helm installation)"
 		fi
 	else
-		TOTAL_STEPS=14  # Full deployment: time_sync_configured, system_update, packages_installed, firewall_configured, k3s_installed, k3s_path_fixed, kubectl_configured, azure_cli_installed, helm_installed, azure_cli_configured, azure_authenticated, resource_group_created, arc_connected, flux_installed
+		TOTAL_STEPS=15  # Full deployment: time_sync_configured, system_update, packages_installed, firewall_configured, k3s_installed, k3s_path_fixed, kubectl_configured, azure_cli_installed, helm_installed, azure_cli_configured, azure_authenticated, resource_group_created, arc_connected, oidc_configured, flux_installed
 		# Add remote management step if enabled
 		if [[ "$ENABLE_REMOTE_MGMT" == "true" ]]; then
-			TOTAL_STEPS=15
+			TOTAL_STEPS=16
 		fi
 	fi
 fi
@@ -1790,13 +1790,8 @@ if pre_execute_steps "firewall_configured" "Configuring firewall"; then
 fi
 
 # Install K3s based on node role
-# Build common server flags — includes OIDC issuer for Azure workload identity
+# Build common server flags for k3s installation
 K3S_COMMON_SERVER_FLAGS="--write-kubeconfig-mode 644 --disable traefik --disable servicelb"
-if [[ -n "${AZURE_CLUSTER_NAME}" ]]; then
-	K3S_OIDC_ISSUER="https://oidc.prod-aks.azure.com/${AZURE_CLUSTER_NAME}/"
-	K3S_COMMON_SERVER_FLAGS="${K3S_COMMON_SERVER_FLAGS} --kube-apiserver-arg service-account-issuer=${K3S_OIDC_ISSUER}"
-	log "${INFO} Configuring OIDC issuer: ${K3S_OIDC_ISSUER}"
-fi
 
 if [[ -z "${NODE_ROLE}" ]]; then
 	# Single node mode
@@ -2232,11 +2227,11 @@ else
 			fi
 			
 			if [[ "$VERBOSE" == "true" ]]; then
-				az connectedk8s connect --name "$AZURE_CLUSTER_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --subscription "$AZURE_SUBSCRIPTION_ID" --location "$AZURE_LOCATION"
+				az connectedk8s connect --name "$AZURE_CLUSTER_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --subscription "$AZURE_SUBSCRIPTION_ID" --location "$AZURE_LOCATION" --enable-oidc-issuer
 				exit_code=$?
 			else
 				log_file="/tmp/k3s-arc-setup-$$.log"
-				az connectedk8s connect --name "$AZURE_CLUSTER_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --subscription "$AZURE_SUBSCRIPTION_ID" --location "$AZURE_LOCATION" >"$log_file" 2>&1
+				az connectedk8s connect --name "$AZURE_CLUSTER_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --subscription "$AZURE_SUBSCRIPTION_ID" --location "$AZURE_LOCATION" --enable-oidc-issuer >"$log_file" 2>&1
 				exit_code=$?
 			fi
 			
@@ -2248,6 +2243,77 @@ else
 					enterprise_error "Azure Arc connection failed" "Check service principal permissions and network connectivity. Run with --verbose for full error details."
 				fi
 			fi
+		fi
+	fi
+fi
+
+# Enable OIDC issuer on Arc cluster and configure k3s (skip for node joining)
+if [[ "${SKIP_AZURE_COMPONENTS}" == "true" ]]; then
+	verbose_log "Skipping OIDC configuration (node join mode)"
+else
+	if pre_execute_steps "oidc_configured" "Configuring OIDC issuer for workload identity"; then
+		log_file="/tmp/k3s-arc-setup-$$.log"
+		exit_code=0
+
+		# Enable OIDC issuer profile on the Arc connected cluster
+		verbose_log "Enabling OIDC issuer profile on Arc cluster..."
+		OIDC_OUTPUT=$(az connectedk8s update \
+			--name "$AZURE_CLUSTER_NAME" \
+			--resource-group "$AZURE_RESOURCE_GROUP" \
+			--subscription "$AZURE_SUBSCRIPTION_ID" \
+			--enable-oidc-issuer \
+			-o json 2>"$log_file")
+		exit_code=$?
+
+		if [[ $exit_code -eq 0 ]]; then
+			# Extract the OIDC issuer URL from the response
+			OIDC_ISSUER_URL=$(echo "$OIDC_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('oidcIssuerProfile',{}).get('issuerUrl',''))" 2>/dev/null)
+
+			if [[ -n "$OIDC_ISSUER_URL" ]]; then
+				verbose_log "${CHECK} OIDC issuer URL: ${OIDC_ISSUER_URL}"
+
+				# Configure k3s API server with the OIDC issuer
+				verbose_log "Configuring k3s service-account-issuer..."
+				sudo tee /etc/rancher/k3s/config.yaml > /dev/null <<-OIDC_EOF
+				kube-apiserver-arg:
+				  - "service-account-issuer=${OIDC_ISSUER_URL}"
+OIDC_EOF
+
+				# Restart k3s to apply the new issuer
+				verbose_log "Restarting k3s to apply OIDC configuration..."
+				sudo systemctl restart k3s
+				sleep 10
+
+				# Wait for k3s to be ready
+				retries=0
+				while [[ $retries -lt 30 ]]; do
+					if kubectl get nodes >/dev/null 2>&1; then
+						verbose_log "${CHECK} k3s restarted with OIDC issuer configured"
+						break
+					fi
+					retries=$((retries + 1))
+					sleep 5
+				done
+
+				if [[ $retries -ge 30 ]]; then
+					log "${WARN} k3s took longer than expected to restart"
+					exit_code=1
+				fi
+
+				# Output the OIDC URL for the operator to use in the Crossplane claim
+				echo ""
+				log "${INFO} ${BOLD}IMPORTANT:${NC} Set this OIDC issuer URL in your OrgArcCluster claim:"
+				log "${INFO}   arcOidcIssuerUrl: ${OIDC_ISSUER_URL}"
+				echo ""
+			else
+				log "${WARN} Could not extract OIDC issuer URL from response"
+				exit_code=1
+			fi
+		fi
+
+		if ! post_execute_steps "oidc_configured" "$exit_code" "$log_file"; then
+			log "${WARN} OIDC configuration failed - workload identity may not work"
+			log "${WARN} You can manually enable it later with: az connectedk8s update --name $AZURE_CLUSTER_NAME --resource-group $AZURE_RESOURCE_GROUP --enable-oidc-issuer"
 		fi
 	fi
 fi
